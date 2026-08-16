@@ -2,7 +2,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 
-app = FastAPI()
+app = FastAPI(
+    title="Task API",
+    description="A simple CRUD API to manage your to-do list",
+    version="1.0"
+)
 
 # ── in-memory "database" ──────────────────────────
 tasks = [
@@ -10,6 +14,7 @@ tasks = [
     {"id": 2, "title": "Read a book",   "done": False},
     {"id": 3, "title": "Go for a walk", "done": True},
 ]
+
 
 # ── Stage 1 endpoints ─────────────────────────────
 @app.get("/")
