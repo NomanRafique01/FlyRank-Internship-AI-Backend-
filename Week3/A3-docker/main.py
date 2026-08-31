@@ -30,17 +30,22 @@ SEED_TASKS = [
     {"title": "Go for a walk", "done": True},
 ]
 
+import time
+
 def create_db_and_seed():
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        count = len(session.exec(select(Task)).all())
-        if count == 0:
-            for t in SEED_TASKS:
-                session.add(Task(**t))
-            session.commit()
-
-create_db_and_seed()
-
+    for i in range(10):
+        try:
+            SQLModel.metadata.create_all(engine)
+            with Session(engine) as session:
+                count = len(session.exec(select(Task)).all())
+                if count == 0:
+                    for t in SEED_TASKS:
+                        session.add(Task(**t))
+                    session.commit()
+            break
+        except Exception:
+            print(f"DB not ready, retrying in 2s... ({i+1}/10)")
+            time.sleep(2)
 # ── App ───────────────────────────────────────────
 app = FastAPI(
     title="Task API",
