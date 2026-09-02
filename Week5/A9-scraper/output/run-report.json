@@ -1,0 +1,10 @@
+{
+  "started_at": "2026-09-02T20:41:33Z",
+  "duration_seconds": 4.99,
+  "pages_processed": 60,
+  "valid_records": 60,
+  "total_stored": 60,
+  "invalid_records": 1,
+  "failed_pages": 1,
+  "robots_txt": "robots.txt returned status 404"
+}
