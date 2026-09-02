@@ -2,25 +2,29 @@
 FlyRank Internship · Backend Track · Week 5 · Assignment A9
 The Polite Scraper — Python lane (Requests + BeautifulSoup + Pydantic)
 
-Stage 3: Extract raw book records
-- Fetch and cache each of the 60 detail pages (same politeness as Stage 1)
-- Aim selectors at div.product_main — not the whole document
-- Extract 8 raw fields: title, product_url, price_text, availability_text,
-  rating_text, description (null if missing), source_page, fetched_at
-- Keep provenance: source_page + fetched_at on every record
+Stage 4: Clean it, check it, store it
+- BookRecord Pydantic schema: all required fields, types, and constraints
+- price_text -> price_gbp (float); availability_text -> in_stock (bool);
+  rating_text -> rating (int 1-5)
+- Every record validated before storage; failures go to output/errors.json
+- output/books.json: exactly 60 unique records, idempotent across reruns
+  (merge by canonical product_url — rerun never duplicates)
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from pydantic import BaseModel, HttpUrl, ValidationError, field_validator
 
 # ─────────────────────────────  Constants  ────────────────────────────────── #
 
@@ -38,6 +42,36 @@ OUTPUT_DIR = Path(__file__).parent.parent / "output"
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ─────────────────────────── Pydantic Schema  ─────────────────────────────── #
+
+class BookRecord(BaseModel):
+    """Validated, normalised book record — the single source of truth for shape."""
+    title: str
+    product_url: HttpUrl
+    price_text: str
+    price_gbp: float           # normalised from price_text
+    availability_text: str
+    in_stock: bool             # normalised from availability_text
+    rating_text: str
+    rating: Optional[int]      # 1-5 integer; null when not parseable
+    description: Optional[str]
+    source_page: HttpUrl
+    fetched_at: str            # ISO-8601 UTC
+
+    @field_validator("price_gbp")
+    @classmethod
+    def price_must_be_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("price_gbp must be >= 0")
+        return v
+
+    @field_validator("product_url", "source_page", mode="before")
+    @classmethod
+    def url_must_be_https(cls, v: str) -> str:
+        if not str(v).startswith("https://"):
+            raise ValueError(f"URL must start with https://: {v}")
+        return v
 
 # ──────────────────────────── HTTP helpers  ───────────────────────────────── #
 
@@ -82,10 +116,6 @@ def fetch(url: str) -> tuple[str, bool]:
 # ─────────────────────────── Stage 2: Discover  ──────────────────────────── #
 
 def discover_book_urls() -> tuple[list[str], dict[str, str]]:
-    """
-    Walk the first 3 catalogue pages.
-    Returns (unique_book_urls, source_map) where source_map[url] = catalogue_page_url.
-    """
     page_url: str | None = BASE_URL
     book_urls: list[str] = []
     source_map: dict[str, str] = {}
@@ -102,7 +132,7 @@ def discover_book_urls() -> tuple[list[str], dict[str, str]]:
             if a_tag and a_tag.get("href"):
                 abs_url = urljoin(page_url, a_tag["href"])
                 book_urls.append(abs_url)
-                source_map.setdefault(abs_url, current)   # first page wins
+                source_map.setdefault(abs_url, current)
 
         next_btn = soup.select_one("li.next > a")
         if next_btn and pages_visited < 3:
@@ -118,14 +148,9 @@ def discover_book_urls() -> tuple[list[str], dict[str, str]]:
 # ─────────────────────────── Stage 3: Extract  ───────────────────────────── #
 
 def extract_raw(url: str, source_page: str) -> dict:
-    """
-    Fetch one book detail page and return a raw 8-field record dict.
-    description is null when no product description exists on the page.
-    """
     html, _ = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # Target the product content area only — not the whole document
     product_main = soup.select_one("div.product_main") or soup
 
     title_tag = product_main.select_one("h1")
@@ -137,7 +162,6 @@ def extract_raw(url: str, source_page: str) -> dict:
     avail_tag = product_main.select_one("p.availability")
     availability_text = avail_tag.get_text(strip=True) if avail_tag else ""
 
-    # Star-rating class name is the word form: e.g. ["star-rating", "Three"]
     rating_text = ""
     rating_tag = product_main.select_one("p.star-rating")
     if rating_tag:
@@ -146,7 +170,6 @@ def extract_raw(url: str, source_page: str) -> dict:
                 rating_text = cls
                 break
 
-    # Description lives outside product_main — null when absent
     description = None
     desc_header = soup.find("div", id="product_description")
     if desc_header:
@@ -160,10 +183,73 @@ def extract_raw(url: str, source_page: str) -> dict:
         "price_text": price_text,
         "availability_text": availability_text,
         "rating_text": rating_text,
-        "description": description,              # provenance: null when missing
-        "source_page": source_page,              # provenance: which catalogue page
+        "description": description,
+        "source_page": source_page,
         "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+
+# ─────────────────────────── Stage 4: Normalise & Validate  ──────────────── #
+
+def normalise_and_validate(raw: dict) -> tuple[Optional[BookRecord], Optional[str]]:
+    """
+    Normalise raw fields and validate with Pydantic.
+    Returns (BookRecord, None) on success, or (None, reason) on failure.
+    """
+    price_match = re.search(r"[\d]+\.[\d]+", raw.get("price_text", ""))
+    price_gbp = float(price_match.group()) if price_match else -1.0
+
+    in_stock = "in stock" in raw.get("availability_text", "").lower()
+
+    rating_text = raw.get("rating_text", "")
+    rating = WORD_TO_INT.get(rating_text.lower())
+
+    try:
+        record = BookRecord(
+            title=raw["title"],
+            product_url=raw["product_url"],
+            price_text=raw["price_text"],
+            price_gbp=price_gbp,
+            availability_text=raw["availability_text"],
+            in_stock=in_stock,
+            rating_text=rating_text,
+            rating=rating,
+            description=raw.get("description"),
+            source_page=raw["source_page"],
+            fetched_at=raw["fetched_at"],
+        )
+        return record, None
+    except ValidationError as exc:
+        return None, str(exc)
+
+
+def store(valid_records: list[dict], error_records: list[dict]) -> None:
+    """
+    Idempotent write: merge new records into books.json by product_url.
+    A rerun overwrites existing records for the same URL — never duplicates.
+    """
+    books_path = OUTPUT_DIR / "books.json"
+    existing: dict[str, dict] = {}
+    if books_path.exists():
+        try:
+            for r in json.loads(books_path.read_text(encoding="utf-8")):
+                existing[r["product_url"]] = r
+        except Exception:
+            pass
+
+    for r in valid_records:
+        existing[r["product_url"]] = r     # fresh data wins
+
+    books_path.write_text(
+        json.dumps(list(existing.values()), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (OUTPUT_DIR / "errors.json").write_text(
+        json.dumps(error_records, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(f"\n  books.json  : {len(existing)} records")
+    print(f"  errors.json : {len(error_records)} records")
 
 
 # ──────────────────────────────── Entry point  ────────────────────────────── #
@@ -171,9 +257,19 @@ def extract_raw(url: str, source_page: str) -> dict:
 if __name__ == "__main__":
     book_urls, source_map = discover_book_urls()
 
-    print(f"\n[Stage 3] Extracting raw records for {len(book_urls)} books...")
-    sample = extract_raw(book_urls[0], source_map.get(book_urls[0], BASE_URL))
-    import json
-    print("\nSample raw record:")
-    print(json.dumps(sample, indent=2, ensure_ascii=False))
-    print(f"\ndetail_pages=60  (processing first 1 shown above)")
+    valid_records: list[dict] = []
+    error_records: list[dict] = []
+
+    for url in book_urls:
+        src = source_map.get(url, BASE_URL)
+        raw = extract_raw(url, src)
+        record, err = normalise_and_validate(raw)
+        if record:
+            valid_records.append(json.loads(record.model_dump_json()))
+        else:
+            error_records.append({"product_url": url, "reason": err})
+
+    store(valid_records, error_records)
+    print("\nSample record:")
+    if valid_records:
+        print(json.dumps(valid_records[0], indent=2))
