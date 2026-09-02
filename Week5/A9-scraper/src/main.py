@@ -2,13 +2,12 @@
 FlyRank Internship · Backend Track · Week 5 · Assignment A9
 The Polite Scraper — Python lane (Requests + BeautifulSoup + Pydantic)
 
-Stage 4: Clean it, check it, store it
-- BookRecord Pydantic schema: all required fields, types, and constraints
-- price_text -> price_gbp (float); availability_text -> in_stock (bool);
-  rating_text -> rating (int 1-5)
-- Every record validated before storage; failures go to output/errors.json
-- output/books.json: exactly 60 unique records, idempotent across reruns
-  (merge by canonical product_url — rerun never duplicates)
+Stage 5: Survive failures, report the run
+- Per-page exception handling: one broken page is logged and skipped
+- One retry on 5xx (server error); no retry on 404/403 (asking again is a pest)
+- output/run-report.json: started_at, duration, pages_processed, valid_records,
+  total_stored, invalid_records, failed_pages, robots_txt
+- Pass --inject-fake to add a deliberate bad URL for testing (never hammer real site)
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,12 +28,14 @@ from pydantic import BaseModel, HttpUrl, ValidationError, field_validator
 
 # ─────────────────────────────  Constants  ────────────────────────────────── #
 
-BASE_URL = "https://books.toscrape.com/"
-REPO_URL = "https://github.com/your-username/FlyRank-Internship-AI-Backend-"
+BASE_URL   = "https://books.toscrape.com/"
+ROBOTS_URL = "https://books.toscrape.com/robots.txt"
+REPO_URL   = "https://github.com/your-username/FlyRank-Internship-AI-Backend-"
 USER_AGENT = f"FlyRankInternship-A9/1.0 (+{REPO_URL})"
 
-TIMEOUT = 10
-DELAY   = 0.6
+TIMEOUT     = 10    # seconds per request
+DELAY       = 0.6   # seconds between real HTTP requests
+MAX_RETRIES = 1     # one retry on 5xx only
 
 WORD_TO_INT = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
 
@@ -46,29 +48,28 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # ─────────────────────────── Pydantic Schema  ─────────────────────────────── #
 
 class BookRecord(BaseModel):
-    """Validated, normalised book record — the single source of truth for shape."""
     title: str
     product_url: HttpUrl
     price_text: str
-    price_gbp: float           # normalised from price_text
+    price_gbp: float
     availability_text: str
-    in_stock: bool             # normalised from availability_text
+    in_stock: bool
     rating_text: str
-    rating: Optional[int]      # 1-5 integer; null when not parseable
+    rating: Optional[int]
     description: Optional[str]
     source_page: HttpUrl
-    fetched_at: str            # ISO-8601 UTC
+    fetched_at: str
 
     @field_validator("price_gbp")
     @classmethod
-    def price_must_be_non_negative(cls, v: float) -> float:
+    def price_non_negative(cls, v: float) -> float:
         if v < 0:
             raise ValueError("price_gbp must be >= 0")
         return v
 
     @field_validator("product_url", "source_page", mode="before")
     @classmethod
-    def url_must_be_https(cls, v: str) -> str:
+    def must_be_https(cls, v: str) -> str:
         if not str(v).startswith("https://"):
             raise ValueError(f"URL must start with https://: {v}")
         return v
@@ -87,7 +88,10 @@ def _cache_key(url: str) -> Path:
 
 
 def fetch(url: str) -> tuple[str, bool]:
-    """Return (html_text, from_cache). Raises HTTPError on non-200."""
+    """
+    Return (html_text, from_cache).
+    One retry on 5xx. No retry on 4xx — 404 won't appear; 403 means stop asking.
+    """
     global _last_request_time
 
     cache_path = _cache_key(url)
@@ -100,17 +104,38 @@ def fetch(url: str) -> tuple[str, bool]:
     if elapsed < DELAY:
         time.sleep(DELAY - elapsed)
 
-    resp = _session.get(url, timeout=TIMEOUT)
-    _last_request_time = time.monotonic()
+    attempt = 0
+    while True:
+        resp = _session.get(url, timeout=TIMEOUT)
+        _last_request_time = time.monotonic()
 
-    if resp.status_code != 200:
+        if resp.status_code == 200:
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            html = resp.text
+            cache_path.write_text(html, encoding="utf-8")
+            print(f"  FETCH      {url}  ({len(html):,} bytes)")
+            return html, False
+
+        # Retry once on 5xx (server error — might be transient)
+        if resp.status_code >= 500 and attempt < MAX_RETRIES:
+            attempt += 1
+            print(f"  RETRY ({attempt})  {url}  status={resp.status_code}")
+            time.sleep(DELAY * 2)
+            continue
+
+        # 4xx (including 404, 403) — raise immediately, no retry
         resp.raise_for_status()
 
-    resp.encoding = resp.apparent_encoding or "utf-8"
-    html = resp.text
-    cache_path.write_text(html, encoding="utf-8")
-    print(f"  FETCH      {url}  ({len(html):,} bytes)")
-    return html, False
+
+def check_robots() -> str:
+    """Fetch robots.txt; return its content or a 'not found' note."""
+    try:
+        resp = _session.get(ROBOTS_URL, timeout=TIMEOUT)
+        if resp.status_code == 200:
+            return resp.text.strip()
+        return f"robots.txt returned status {resp.status_code}"
+    except Exception as exc:
+        return f"no robots file found ({exc})"
 
 
 # ─────────────────────────── Stage 2: Discover  ──────────────────────────── #
@@ -150,7 +175,6 @@ def discover_book_urls() -> tuple[list[str], dict[str, str]]:
 def extract_raw(url: str, source_page: str) -> dict:
     html, _ = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
-
     product_main = soup.select_one("div.product_main") or soup
 
     title_tag = product_main.select_one("h1")
@@ -192,15 +216,9 @@ def extract_raw(url: str, source_page: str) -> dict:
 # ─────────────────────────── Stage 4: Normalise & Validate  ──────────────── #
 
 def normalise_and_validate(raw: dict) -> tuple[Optional[BookRecord], Optional[str]]:
-    """
-    Normalise raw fields and validate with Pydantic.
-    Returns (BookRecord, None) on success, or (None, reason) on failure.
-    """
     price_match = re.search(r"[\d]+\.[\d]+", raw.get("price_text", ""))
     price_gbp = float(price_match.group()) if price_match else -1.0
-
     in_stock = "in stock" in raw.get("availability_text", "").lower()
-
     rating_text = raw.get("rating_text", "")
     rating = WORD_TO_INT.get(rating_text.lower())
 
@@ -223,11 +241,60 @@ def normalise_and_validate(raw: dict) -> tuple[Optional[BookRecord], Optional[st
         return None, str(exc)
 
 
-def store(valid_records: list[dict], error_records: list[dict]) -> None:
+# ─────────────────────────── Stage 5: Run  ───────────────────────────────── #
+
+def run(extra_urls: list[str] | None = None) -> None:
     """
-    Idempotent write: merge new records into books.json by product_url.
-    A rerun overwrites existing records for the same URL — never duplicates.
+    Full pipeline with per-page failure handling and a run report.
+    Pass extra_urls to inject deliberate 404s — test failure without touching the site.
     """
+    start_time = datetime.now(timezone.utc)
+    t0 = time.monotonic()
+
+    print("=" * 60)
+    print("FlyRankInternship-A9  polite scraper  starting")
+    print(f"User-Agent: {USER_AGENT}")
+    print("=" * 60)
+
+    print("\n[Stage 0] Checking robots.txt...")
+    robots = check_robots()
+    print(f"  {robots[:120]}")
+
+    print("\n[Stage 2] Discovering catalogue pages...")
+    book_urls, source_map = discover_book_urls()
+
+    if extra_urls:
+        book_urls = book_urls + extra_urls
+        print(f"  + {len(extra_urls)} injected URL(s) for failure testing")
+
+    print(f"\n[Stage 3-5] Processing {len(book_urls)} URLs...")
+
+    valid_records: list[dict] = []
+    error_records: list[dict] = []
+    pages_processed = 0
+    failed_pages = 0
+    seen: set[str] = set()
+
+    for url in book_urls:
+        if url in seen:
+            continue
+        seen.add(url)
+
+        src = source_map.get(url, BASE_URL)
+        try:
+            raw = extract_raw(url, src)
+            pages_processed += 1
+            record, err = normalise_and_validate(raw)
+            if record:
+                valid_records.append(json.loads(record.model_dump_json()))
+            else:
+                error_records.append({"product_url": url, "raw": raw, "reason": err})
+        except Exception as exc:
+            print(f"  FAILED     {url}  -- {exc}")
+            failed_pages += 1
+            error_records.append({"product_url": url, "reason": str(exc)})
+
+    # Idempotent write (Stage 4)
     books_path = OUTPUT_DIR / "books.json"
     existing: dict[str, dict] = {}
     if books_path.exists():
@@ -236,40 +303,50 @@ def store(valid_records: list[dict], error_records: list[dict]) -> None:
                 existing[r["product_url"]] = r
         except Exception:
             pass
-
     for r in valid_records:
-        existing[r["product_url"]] = r     # fresh data wins
+        existing[r["product_url"]] = r
+    final_records = list(existing.values())
 
     books_path.write_text(
-        json.dumps(list(existing.values()), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+        json.dumps(final_records, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (OUTPUT_DIR / "errors.json").write_text(
-        json.dumps(error_records, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+        json.dumps(error_records, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print(f"\n  books.json  : {len(existing)} records")
-    print(f"  errors.json : {len(error_records)} records")
+
+    # Run report
+    duration_s = round(time.monotonic() - t0, 2)
+    run_report = {
+        "started_at": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "duration_seconds": duration_s,
+        "pages_processed": pages_processed,
+        "valid_records": len(valid_records),
+        "total_stored": len(final_records),
+        "invalid_records": len(error_records),
+        "failed_pages": failed_pages,
+        "robots_txt": robots[:200],
+    }
+    (OUTPUT_DIR / "run-report.json").write_text(
+        json.dumps(run_report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    print("\n" + "=" * 60)
+    print("Run complete.")
+    print(f"  books.json      : {len(final_records)} records")
+    print(f"  errors.json     : {len(error_records)} records")
+    print(f"  failed_pages    : {failed_pages}")
+    print(f"  duration        : {duration_s}s")
+    print("=" * 60)
+    if final_records:
+        print("\nSample record:")
+        print(json.dumps(final_records[0], indent=2))
 
 
 # ──────────────────────────────── Entry point  ────────────────────────────── #
 
 if __name__ == "__main__":
-    book_urls, source_map = discover_book_urls()
-
-    valid_records: list[dict] = []
-    error_records: list[dict] = []
-
-    for url in book_urls:
-        src = source_map.get(url, BASE_URL)
-        raw = extract_raw(url, src)
-        record, err = normalise_and_validate(raw)
-        if record:
-            valid_records.append(json.loads(record.model_dump_json()))
-        else:
-            error_records.append({"product_url": url, "reason": err})
-
-    store(valid_records, error_records)
-    print("\nSample record:")
-    if valid_records:
-        print(json.dumps(valid_records[0], indent=2))
+    extra: list[str] = []
+    if "--inject-fake" in sys.argv:
+        extra = ["https://books.toscrape.com/catalogue/this-book-does-not-exist/index.html"]
+        print("WARNING: Injecting one fake URL to test failure handling")
+    run(extra_urls=extra or None)
