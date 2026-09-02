@@ -14,7 +14,7 @@ services:
       POSTGRES_PASSWORD: dev
       POSTGRES_DB: tasks
     volumes:
-      - taskdata:/var/lib/postgresql
+      - taskdata:/var/lib/postgresql/data
 
 volumes:
   taskdata:
