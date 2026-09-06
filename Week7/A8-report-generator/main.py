@@ -1,8 +1,10 @@
 from datetime import datetime
 import os
 import sqlite3
+from typing import Optional
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from report import getReportData
 from renderer import generate_html, render_pdf
@@ -10,6 +12,10 @@ from renderer import generate_html, render_pdf
 DB_PATH = "report.db"
 
 app = FastAPI(title="PDF Report Generator")
+
+
+class ReportRequest(BaseModel):
+    force: Optional[bool] = False
 
 
 def init_db():
@@ -34,13 +40,30 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/reports", status_code=status.HTTP_201_CREATED)
-async def create_report():
+@app.post("/reports")
+async def create_report(req: Optional[ReportRequest] = None):
     init_db()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    force = req.force if req else False
+    today = datetime.now().strftime("%Y-%m-%d")
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
+    # Stage 5 Idempotency check: if report already exists for today and not forced, return existing
+    if not force:
+        cur.execute(
+            "SELECT id, path FROM reports WHERE date(created_at) = ? ORDER BY id DESC LIMIT 1",
+            (today,),
+        )
+        existing = cur.fetchone()
+        if existing and os.path.exists(existing[1]):
+            conn.close()
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={"id": existing[0], "file": f"/reports/{existing[0]}/file"},
+            )
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
         "INSERT INTO reports (path, created_at) VALUES (?, ?)", ("", now_str)
     )
@@ -56,7 +79,10 @@ async def create_report():
     html_content = generate_html(report_data)
     await render_pdf(html_content, pdf_path)
 
-    return {"id": report_id, "file": f"/reports/{report_id}/file"}
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={"id": report_id, "file": f"/reports/{report_id}/file"},
+    )
 
 
 @app.get("/reports/{id}")
