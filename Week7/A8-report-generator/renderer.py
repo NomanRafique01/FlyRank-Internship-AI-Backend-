@@ -196,3 +196,4 @@ if __name__ == "__main__":
     html_content = generate_html(data)
     pdf_path = asyncio.run(render_pdf(html_content, "reports/test.pdf"))
     print(f"Generated PDF saved to: {pdf_path}")
+

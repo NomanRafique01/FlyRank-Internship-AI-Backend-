@@ -79,3 +79,4 @@ def seed_orders(count: int = 200):
 if __name__ == "__main__":
     count = seed_orders(200)
     print(f"Seeded report.db. Total orders count: {count}")
+

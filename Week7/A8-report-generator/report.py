@@ -79,3 +79,4 @@ if __name__ == "__main__":
         "orders_last_7_days": report_data["orders_last_7_days"],
     }
     print(json.dumps(summary_view, indent=2))
+
