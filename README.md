@@ -48,7 +48,6 @@ See the [capstone README](flyrank-capstone-metering-billing/README.md) for the f
 ├── Week5/A9-scraper/               # Cached and validated scraping pipeline
 ├── Week7/A8-report-generator/      # SQL-backed PDF reporting service
 ├── flyrank-capstone-metering-billing/ # AI metering and billing engine
-├── flyrank-assignment-solver.md    # Assignment workflow and conventions
 └── README.md
 ```
 
