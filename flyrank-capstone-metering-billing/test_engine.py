@@ -230,3 +230,4 @@ def test_probe_5_pricing_math():
     assert usage_data["usage"]["tokens"]["breakdown"]["reasoning_tokens"] == 2000
 
     print("\n[PASS] PROBE 5: Pricing rules verified. Cached input discounted, reasoning tokens priced as output, GET /usage matches exact totals.")
+

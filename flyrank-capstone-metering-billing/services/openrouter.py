@@ -98,3 +98,4 @@ async def generate_completion(
         },
         "model": "simulated/local-mode",
     }
+

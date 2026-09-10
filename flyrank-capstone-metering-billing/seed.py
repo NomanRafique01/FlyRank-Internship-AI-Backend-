@@ -39,3 +39,4 @@ def seed_data():
 
 if __name__ == "__main__":
     seed_data()
+

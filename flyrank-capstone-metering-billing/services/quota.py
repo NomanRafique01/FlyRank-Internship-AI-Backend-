@@ -110,3 +110,4 @@ def check_quota(conn: sqlite3.Connection, tenant_id: str, requested_tokens: int 
         "subscription": sub,
         "usage": usage
     }
+

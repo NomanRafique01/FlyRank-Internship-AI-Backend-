@@ -32,3 +32,4 @@ class CheckoutRequest(BaseModel):
     plan_id: str = "pro"
     success_url: Optional[str] = "http://localhost:8000/billing/success?session_id={CHECKOUT_SESSION_ID}"
     cancel_url: Optional[str] = "http://localhost:8000/billing/cancel"
+

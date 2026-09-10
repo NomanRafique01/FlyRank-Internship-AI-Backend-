@@ -112,3 +112,4 @@ def init_db():
                     max_ai_tokens = excluded.max_ai_tokens,
                     price_cents = excluded.price_cents
             """, (plan_id, plan_data["name"], plan_data["max_api_calls"], plan_data["max_ai_tokens"], plan_data["price_cents"]))
+

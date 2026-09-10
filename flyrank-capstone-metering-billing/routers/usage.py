@@ -47,3 +47,4 @@ def get_usage(tenant_id: str = Query(..., description="Tenant ID to retrieve usa
             "total_formatted": format_micro_cents_to_dollars(total_cost_micro),
         }
     }
+

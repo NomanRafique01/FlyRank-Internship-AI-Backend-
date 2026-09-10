@@ -59,3 +59,4 @@ async def stripe_webhook(
 
     outcome = process_stripe_event(event)
     return JSONResponse(status_code=status.HTTP_200_OK, content={"received": True, "outcome": outcome})
+

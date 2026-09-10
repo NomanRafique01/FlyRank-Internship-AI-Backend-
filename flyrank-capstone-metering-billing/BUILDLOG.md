@@ -28,3 +28,4 @@
   - Structured `services/openrouter.py` to support live OpenRouter API calls using `OPENROUTER_API_KEY` from `.env`, but included an intelligent fallback to deterministic token generation. This guarantees that automated evaluation probes and tests pass with 100% reliability even when run offline or without API credits.
 - **Integer Cents Representation**:
   - Represented money as micro-cents ($1 = 100,000,000 micro-cents) internally, which allows fractional cent token costs to accumulate across thousands of requests with exact mathematical precision.
+

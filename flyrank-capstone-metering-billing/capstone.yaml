@@ -35,3 +35,4 @@ endpoints:
     path: "/webhooks/stripe"
     headers:
       Stripe-Signature: "stripe-signature-hash"
+

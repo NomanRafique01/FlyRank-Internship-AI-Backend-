@@ -151,3 +151,4 @@ pytest test_engine.py -v
 - **Single Currency**: Currently prices in USD cents/micro-cents. Multi-currency foreign exchange rates are not modeled.
 - **Billing Cycle Boundaries**: Quotas and rollups evaluate usage on calendar months (`YYYY-MM`). Staggered mid-month billing cycles are handled as full calendar periods.
 - **SQLite Storage**: While production-grade for single-node deployments using WAL mode and ACID transactions, multi-node horizontal scaling requires PostgreSQL.
+

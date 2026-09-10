@@ -26,3 +26,4 @@ def format_micro_cents_to_dollars(micro_cents: int) -> str:
     """Format integer micro-cents into readable USD string e.g. $0.001234"""
     dollars = micro_cents / 100_000_000.0
     return f"${dollars:.6f}"
+
