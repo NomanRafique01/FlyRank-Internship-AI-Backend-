@@ -1,0 +1,37 @@
+# FlyRank Capstone Manifest
+version: "1.0"
+title: "Usage Metering & Billing Engine"
+author: "Noman Rafique"
+language: "python"
+framework: "fastapi"
+
+run: "uvicorn main:app --host 0.0.0.0 --port 8000"
+seed: "python seed.py"
+test: "pytest test_engine.py -v"
+base_url: "http://localhost:8000"
+
+endpoints:
+  health:
+    method: "GET"
+    path: "/health"
+  billable_action:
+    method: "POST"
+    path: "/generate"
+    headers:
+      X-Tenant-Id: "tenant_free"
+      Idempotency-Key: "uuid-v4-or-unique-string"
+    body:
+      prompt: "Explain distributed consensus in one sentence"
+  usage_summary:
+    method: "GET"
+    path: "/usage?tenant_id=tenant_free"
+  stripe_checkout:
+    method: "POST"
+    path: "/billing/checkout-session"
+    body:
+      tenant_id: "tenant_free"
+  stripe_webhook:
+    method: "POST"
+    path: "/webhooks/stripe"
+    headers:
+      Stripe-Signature: "stripe-signature-hash"
